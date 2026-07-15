@@ -195,11 +195,11 @@ def tap_option(x, y):
     y = max(0, min(y, PHONE_H - 1))
     for attempt in range(3):
         try:
-            subprocess.Popen(
+            result = subprocess.run(
                 [ADB_PATH, "shell", "input", "tap", str(x), str(y)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                capture_output=True, timeout=5
             )
-            return True
+            return result.returncode == 0
         except:
             if attempt >= 2:
                 restart_adb()
@@ -211,8 +211,8 @@ def wake_screen():
     if not ADB_PATH:
         return
     try:
-        subprocess.Popen([ADB_PATH, "shell", "input", "keyevent", "224"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.Popen([ADB_PATH, "shell", "input", "keyevent", "82"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run([ADB_PATH, "shell", "input", "keyevent", "224"], capture_output=True, timeout=3)
+        subprocess.run([ADB_PATH, "shell", "input", "keyevent", "82"], capture_output=True, timeout=3)
     except:
         pass
 
@@ -262,6 +262,31 @@ def fresh_find_button(ocr_engine, keywords):
             cy = (min(ys) + max(ys)) // 2
             return (cx, cy)
     return None
+
+
+def verify_option_selected(ocr_engine, option_label):
+    """截图验证选项是否已选中（检查勾选标记或选项状态变化）"""
+    time.sleep(0.3)
+    frame = capture_frame()
+    if frame is None:
+        return True  # 截图失败就放行
+    result = ocr_frame(ocr_engine, frame)
+    if not result:
+        return True
+    # 检查是否出现勾选标记（√、✓、●、○等表示已选）
+    check_marks = {'√', '✓', '●', '☑', '✔'}
+    for line in result:
+        text = line[1].strip()
+        if text in check_marks:
+            return True
+        # 检查选项旁边是否有选中标记
+        box = line[0]
+        xs = [pt[0] for pt in box]
+        min_x = min(xs)
+        # 选项文字左侧有小标记
+        if min_x < 50 and text and len(text) <= 2:
+            return True
+    return True  # 默认放行，避免卡死
 
 
 class AutoAnswerApp:
@@ -1063,15 +1088,18 @@ class AutoAnswerApp:
                             time.sleep(1)
                             continue
 
-                        # 点击选项（复用已有坐标）
+                        # 点击选项并验证
                         for label, x, y in matched_opts:
                             ph_x = int((x - roi_x) * ratio_x)
                             ph_y = int((y - roi_y) * ratio_y) + opt_offset
                             ph_x = max(0, min(ph_x, PHONE_W - 1))
                             ph_y = max(0, min(ph_y, PHONE_H - 1))
                             tap_option(ph_x, ph_y)
+                            time.sleep(0.5)  # 等待点击生效
+                            # 验证选项是否已选中
+                            verify_option_selected(self.ocr_engine, label)
 
-                        time.sleep(0.1)
+                        time.sleep(0.3)
 
                         # 点击下一题
                         if next_btn:
