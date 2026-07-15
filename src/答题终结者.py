@@ -220,10 +220,9 @@ def wake_screen():
     except:
         pass
 
-def fresh_find_option(ocr_engine, target_label, frame=None):
-    """OCR找到指定选项坐标，可复用已有帧"""
-    if frame is None:
-        frame = capture_frame()
+def fresh_find_option(ocr_engine, target_label, target_text=None):
+    """OCR找到指定选项坐标，重新截图保证实时"""
+    frame = capture_frame()
     if frame is None:
         return None
     result = ocr_frame(ocr_engine, frame)
@@ -232,6 +231,7 @@ def fresh_find_option(ocr_engine, target_label, frame=None):
     for line in result:
         box = line[0]
         text = line[1].strip()
+        # 按字母匹配（A. xxx）
         m = re.match(r'^([A-F])\s*[\.、．:：\-]?\s*', text, re.IGNORECASE)
         if m and m.group(1).upper() == target_label.upper():
             xs = [pt[0] for pt in box]
@@ -239,12 +239,18 @@ def fresh_find_option(ocr_engine, target_label, frame=None):
             cx = (min(xs) + max(xs)) // 2
             cy = (min(ys) + max(ys)) // 2
             return (cx, cy)
+        # 按文本匹配（判断题 正确/错误）
+        if target_text and text.strip() == target_text:
+            xs = [pt[0] for pt in box]
+            ys = [pt[1] for pt in box]
+            cx = (min(xs) + max(xs)) // 2
+            cy = (min(ys) + max(ys)) // 2
+            return (cx, cy)
     return None
 
-def fresh_find_button(ocr_engine, keywords, frame=None):
-    """OCR找到包含关键词的按钮坐标，可复用已有帧"""
-    if frame is None:
-        frame = capture_frame()
+def fresh_find_button(ocr_engine, keywords):
+    """OCR找到包含关键词的按钮坐标，重新截图"""
+    frame = capture_frame()
     if frame is None:
         return None
     result = ocr_frame(ocr_engine, frame)
@@ -338,7 +344,7 @@ class AutoAnswerApp:
         f_ocr.columnconfigure(3, weight=1)
 
         labels_ocr = ["题目匹配", "选项匹配"]
-        defaults_ocr = ["0.5", "0.5"]
+        defaults_ocr = ["0.5", "0"]
         self._param_entries = {}
         for i, (lbl, val) in enumerate(zip(labels_ocr, defaults_ocr)):
             r, c = divmod(i, 2)
@@ -358,7 +364,7 @@ class AutoAnswerApp:
         f_time.columnconfigure(3, weight=1)
 
         labels_time = ["题前冷却", "题后冷却"]
-        defaults_time = ["2.0", "3.0"]
+        defaults_time = ["3.0", "0"]
         for i, (lbl, val) in enumerate(zip(labels_time, defaults_time)):
             r, c = divmod(i, 2)
             ttk.Label(f_time, text=lbl, width=8, anchor="e").grid(row=r, column=c*2, sticky="e", padx=(0, 4), pady=4)
@@ -445,9 +451,9 @@ class AutoAnswerApp:
             self.btn_offset_entry.delete(0, tk.END); self.btn_offset_entry.insert(0, str(cfg.get("btn_offset", 200)))
             self.opt_offset_entry.delete(0, tk.END); self.opt_offset_entry.insert(0, str(cfg.get("opt_offset", 200)))
             self.ques_thresh_entry.delete(0, tk.END); self.ques_thresh_entry.insert(0, str(cfg.get("ques_thresh", 0.5)))
-            self.opt_thresh_entry.delete(0, tk.END); self.opt_thresh_entry.insert(0, str(cfg.get("opt_thresh", 0.5)))
-            self.pre_cool_entry.delete(0, tk.END); self.pre_cool_entry.insert(0, str(cfg.get("pre_cool", 2.0)))
-            self.post_cool_entry.delete(0, tk.END); self.post_cool_entry.insert(0, str(cfg.get("post_cool", 3.0)))
+            self.opt_thresh_entry.delete(0, tk.END); self.opt_thresh_entry.insert(0, str(cfg.get("opt_thresh", 0)))
+            self.pre_cool_entry.delete(0, tk.END); self.pre_cool_entry.insert(0, str(cfg.get("pre_cool", 3.0)))
+            self.post_cool_entry.delete(0, tk.END); self.post_cool_entry.insert(0, str(cfg.get("post_cool", 0)))
             self.multi_cap_entry.delete(0, tk.END); self.multi_cap_entry.insert(0, str(cfg.get("multi_capture", 3)))
             mode = cfg.get("mode", "auto")
             self.mode_var.set(mode)
@@ -472,9 +478,9 @@ class AutoAnswerApp:
                 "btn_offset": int(self.btn_offset_entry.get().strip() or 200),
                 "opt_offset": int(self.opt_offset_entry.get().strip() or 200),
                 "ques_thresh": float(self.ques_thresh_entry.get().strip() or 0.5),
-                "opt_thresh": float(self.opt_thresh_entry.get().strip() or 0.5),
-                "pre_cool": float(self.pre_cool_entry.get().strip() or 2.0),
-                "post_cool": float(self.post_cool_entry.get().strip() or 3.0),
+                "opt_thresh": float(self.opt_thresh_entry.get().strip() or 0),
+                "pre_cool": float(self.pre_cool_entry.get().strip() or 3.0),
+                "post_cool": float(self.post_cool_entry.get().strip() or 0),
                 "multi_capture": int(self.multi_cap_entry.get().strip() or 3),
                 "mode": self.mode_var.get(),
                 "camera_index": cam_idx
@@ -618,12 +624,19 @@ class AutoAnswerApp:
         ans_str = str(row['answer_letter']).strip()
         opt_map = self.parse_options_with_letters(str(row['options_str']))
         texts = []
-        
-        # 判断题：A=正确，B=错
-        if ans_str.upper() == 'A':
-            texts = ['正确']
-        elif ans_str.upper() == 'B':
-            texts = ['错误']
+
+        # 判断题：选项只有2个且内容为正确/错误/对/错
+        is_judge = False
+        if len(opt_map) == 2:
+            vals = set(opt_map.values())
+            if vals <= {'正确', '错误', '对', '错', '√', '×'}:
+                is_judge = True
+
+        if is_judge:
+            if ans_str.upper() == 'A':
+                texts = [opt_map.get('A', '正确')]
+            elif ans_str.upper() == 'B':
+                texts = [opt_map.get('B', '错误')]
         elif re.search(r'[A-F]', ans_str, re.IGNORECASE):
             raw = ans_str.upper().replace('.', '').replace(' ', '')
             letters = re.split(r'[,，\s]+', raw)
@@ -631,15 +644,12 @@ class AutoAnswerApp:
                 letters = list(letters[0])
             for l in letters:
                 if l in opt_map:
-                    texts.append(f"{l}. {opt_map[l]}")
+                    texts.append(opt_map[l])
                 else:
                     texts.append(l)
         else:
-            if ans_str in ['对', '错', '正确', '错误']:
-                texts = [ans_str]
-            else:
-                texts = [ans_str] if ans_str else []
-        
+            texts = [ans_str] if ans_str else []
+
         if not texts and ans_str:
             texts = [ans_str]
         self.cache[idx] = texts
@@ -755,19 +765,19 @@ class AutoAnswerApp:
                     except:
                         ques_thresh = 0.5
                     try:
-                        opt_thresh = float(self.opt_thresh_entry.get().strip() or 0.5)
+                        opt_thresh = float(self.opt_thresh_entry.get().strip() or 0)
                     except:
-                        opt_thresh = 0.5
+                        opt_thresh = 0
                     try:
-                        pre_cool = float(self.pre_cool_entry.get().strip() or 2.0)
+                        pre_cool = float(self.pre_cool_entry.get().strip() or 3.0)
                     except:
-                        pre_cool = 2.0
+                        pre_cool = 3.0
                     try:
-                        post_cool = float(self.post_cool_entry.get().strip() or 3.0)
+                        post_cool = float(self.post_cool_entry.get().strip() or 0)
                     except:
-                        post_cool = 3.0
+                        post_cool = 0
                     pre_cool = max(0.5, pre_cool)
-                    post_cool = max(0.5, post_cool)
+                    post_cool = max(0, post_cool)
 
                     try:
                         multi_cap = int(self.multi_cap_entry.get().strip() or 3)
@@ -779,7 +789,9 @@ class AutoAnswerApp:
                     btn_offset = int(self.btn_offset_entry.get().strip() or 200)
 
                     # === 搜题重试循环：截图OCR+搜题库，最多3次 ===
-                    wake_screen()  # 每道题只唤醒一次
+                    wake_screen()  # 每道题唤醒一次
+                    if self.first_loop:
+                        time.sleep(1)  # 首题多等1秒，等摄像头就绪
                     best_idx = None
                     score = 0
                     question = ""
@@ -792,14 +804,13 @@ class AutoAnswerApp:
                     first_opt_top = None
 
                     for search_attempt in range(3):
-                        wake_screen()
                         cur_frame = capture_frame()
                         if cur_frame is None:
-                            time.sleep(0.3)
+                            time.sleep(0.1)
                             continue
                         result = ocr_frame(self.ocr_engine, cur_frame)
                         if not result:
-                            time.sleep(0.3)
+                            time.sleep(0.1)
                             continue
 
                         items = []
@@ -840,7 +851,7 @@ class AutoAnswerApp:
                         options = []
                         q_blocks = []
                         next_btn = None
-                        judge_keywords = {'对', '错', '正确', '错误'}
+                        judge_keywords = {'对', '错', '正确', '错误', '√', '×'}
 
                         for item in items:
                             txt = item['text'].strip()
@@ -856,12 +867,12 @@ class AutoAnswerApp:
                                 q_blocks.append(item)
 
                         if not options:
-                            time.sleep(0.3)
+                            time.sleep(0.1)
                             continue
 
                         img = cur_frame
                         if img is None:
-                            time.sleep(0.3)
+                            time.sleep(0.1)
                             continue
                         h, w = img.shape[:2]
                         all_y = [it['y'] for it in items]
@@ -900,7 +911,7 @@ class AutoAnswerApp:
                             question = " ".join([it['text'] for it in q_blocks[:3]])
 
                         if not question:
-                            time.sleep(0.3)
+                            time.sleep(0.1)
                             continue
 
                         current_key = self.clean_text(question)[:50]
@@ -921,7 +932,7 @@ class AutoAnswerApp:
                             score = retry_score
                             break
 
-                        time.sleep(0.3)
+                        time.sleep(0.1)
 
                     # 3次都没搜到 → 暂停转手动
                     if best_idx is None:
@@ -1040,28 +1051,26 @@ class AutoAnswerApp:
                     if len(targets) > 1:
                         matched_count = len([m for m in matched_opts if m[0] != 'J'])
                         if matched_count < len(targets):
+                            self.log(f"多选匹配不完整({matched_count}/{len(targets)})，转手动")
                             _to_manual(self)
                             time.sleep(1)
+                            continue
 
-                    # 答案显示：用试卷上OCR识别出的字母 + 选项内容
+                    # 答案显示：字母用试卷OCR识别的，内容用题库的
+                    # matched_opts[i] 与 correct_texts[i] 按顺序对应
                     if matched_opts:
                         display_parts = []
-                        for label, x, y in matched_opts:
-                            # 找到该选项的OCR内容
-                            opt_text = ""
-                            for opt_item in options:
-                                if opt_item[0] == label:
-                                    opt_text = opt_item[1]
-                                    break
+                        for i, (label, x, y) in enumerate(matched_opts):
+                            opt_text = correct_texts[i].strip() if i < len(correct_texts) else ""
                             display_parts.append(f"{label}. {opt_text}" if opt_text else label)
                         answer_str = ", ".join(display_parts)
+                        self.log(f"答案: {answer_str}")
                     else:
+                        self.log("未匹配到选项，转手动")
                         _to_manual(self)
-                        self.log(f"答案: {answer_str}" if answer_str else "")
                         time.sleep(1)
                         continue
 
-                    self.log(f"答案: {answer_str}")
                     if self.mode == "auto":
                         if not ADB_PATH:
                             self.log("未找到ADB")
@@ -1069,12 +1078,18 @@ class AutoAnswerApp:
                             self.mode_var.set("manual")
                             time.sleep(1)
                             continue
-                        wake_screen()
 
                         # 每个选项点击前重新截图定位
                         for label, x, y in matched_opts:
                             # 重新截图找此选项的最新坐标
-                            fresh_pos = fresh_find_option(self.ocr_engine, label, cur_frame)
+                            # 判断题用文本匹配兜底
+                            target_text = None
+                            if label == 'J':
+                                row = self.df.iloc[best_idx]
+                                opt_map = self.parse_options_with_letters(str(row['options_str']))
+                                ans_str = str(row['answer_letter']).strip().upper()
+                                target_text = opt_map.get(ans_str, "")
+                            fresh_pos = fresh_find_option(self.ocr_engine, label, target_text)
                             if fresh_pos:
                                 cx, cy = fresh_pos
                                 ph_x = int((cx - roi_x) * ratio_x)
@@ -1091,12 +1106,12 @@ class AutoAnswerApp:
                                 ph_y = max(0, min(ph_y, PHONE_H - 1))
 
                                 tap_option(ph_x, ph_y)
-                            time.sleep(0.3)
+                            time.sleep(0.1)
 
-                        time.sleep(0.5)
+                        time.sleep(0.1)
 
                         # 重新截图找下一题按钮
-                        fresh_next = fresh_find_button(self.ocr_engine, ['下一题', '下一页', '下一'], cur_frame)
+                        fresh_next = fresh_find_button(self.ocr_engine, ['下一题', '下一页', '下一'])
                         if fresh_next:
                             cx, cy = fresh_next
                             pb_x = int((cx - roi_x) * ratio_x)
@@ -1115,12 +1130,12 @@ class AutoAnswerApp:
 
                         time.sleep(pre_cool)
                     else:
-                        self.log(f"答案: {answer_str}")
                         time.sleep(1)
 
                     self.last_question_key = ""
                     self.same_index_counter.clear()
                     self._repeat_notified = False
+                    self.first_loop = False
 
                 except Exception as e:
                     _to_manual(self)
