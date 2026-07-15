@@ -207,8 +207,8 @@ def wake_screen():
     if not ADB_PATH:
         return
     try:
-        subprocess.Popen([ADB_PATH, "shell", "input", "keyevent", "224"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.Popen([ADB_PATH, "shell", "input", "keyevent", "82"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run([ADB_PATH, "shell", "input", "keyevent", "224"], capture_output=True, timeout=3)
+        time.sleep(0.3)
     except:
         pass
 
@@ -405,17 +405,16 @@ class AutoAnswerApp:
         self.cam_combo.current(0)
         self.cam_combo.bind("<<ComboboxSelected>>", self.switch_camera)
 
-        ttk.Label(f_dev, text="截图次数", width=8, anchor="e").grid(row=1, column=0, sticky="e", padx=(0, 4), pady=4)
-        self.multi_cap_entry = ttk.Entry(f_dev, width=10, justify="center")
-        self.multi_cap_entry.insert(0, "1")
-        self.multi_cap_entry.grid(row=1, column=1, sticky="w", pady=4)
-
-        ttk.Label(f_dev, text="答题模式", width=8, anchor="e").grid(row=2, column=0, sticky="e", padx=(0, 4), pady=4)
+        ttk.Label(f_dev, text="答题模式", width=8, anchor="e").grid(row=1, column=0, sticky="e", padx=(0, 4), pady=4)
         self.mode_var = tk.StringVar(value="auto")
         mode_frame = ttk.Frame(f_dev)
-        mode_frame.grid(row=2, column=1, sticky="w", pady=4)
+        mode_frame.grid(row=1, column=1, sticky="w", pady=4)
         ttk.Radiobutton(mode_frame, text="自动", variable=self.mode_var, value="auto", command=self._on_mode_change).pack(side="left")
         ttk.Radiobutton(mode_frame, text="手动", variable=self.mode_var, value="manual", command=self._on_mode_change).pack(side="left", padx=(12, 0))
+
+        self.verify_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(f_dev, text="答题自检", variable=self.verify_var).grid(row=2, column=1, sticky="w", pady=4)
+        ttk.Label(f_dev, text="", width=8).grid(row=2, column=0)  # 占位
 
         # -- 操作按钮 --
         f_btn = ttk.LabelFrame(left, text=" 操作 ", padding="8 6")
@@ -452,7 +451,6 @@ class AutoAnswerApp:
             self.opt_thresh_entry.delete(0, tk.END); self.opt_thresh_entry.insert(0, str(cfg.get("opt_thresh", 0)))
             self.pre_cool_entry.delete(0, tk.END); self.pre_cool_entry.insert(0, str(cfg.get("pre_cool", 3.0)))
             self.post_cool_entry.delete(0, tk.END); self.post_cool_entry.insert(0, str(cfg.get("post_cool", 0)))
-            self.multi_cap_entry.delete(0, tk.END); self.multi_cap_entry.insert(0, str(cfg.get("multi_capture", 3)))
             mode = cfg.get("mode", "auto")
             self.mode_var.set(mode)
             self.mode = mode
@@ -479,7 +477,6 @@ class AutoAnswerApp:
                 "opt_thresh": float(self.opt_thresh_entry.get().strip() or 0),
                 "pre_cool": float(self.pre_cool_entry.get().strip() or 3.0),
                 "post_cool": float(self.post_cool_entry.get().strip() or 0),
-                "multi_capture": int(self.multi_cap_entry.get().strip() or 3),
                 "mode": self.mode_var.get(),
                 "camera_index": cam_idx
             }
@@ -672,24 +669,20 @@ class AutoAnswerApp:
             if not clean_db or len(clean_db) < 3:
                 continue
 
-            score1 = SequenceMatcher(None, clean_ocr, clean_db).ratio()
-
-            # 包含关系加分
-            score2 = 0
-            if clean_ocr in clean_db:
-                score2 = 0.8 * (len(clean_ocr) / len(clean_db))
-            elif clean_db in clean_ocr:
-                score2 = 0.8 * (len(clean_db) / len(clean_ocr))
-
-            # 前缀匹配
-            prefix_len = min(15, len(clean_ocr), len(clean_db))
-            score3 = 1.0 if clean_ocr[:prefix_len] == clean_db[:prefix_len] else 0
-
-            score = max(score1, score2, score3 * 0.9)
+            # 快速前缀匹配
+            prefix_len = min(10, len(clean_ocr), len(clean_db))
+            if clean_ocr[:prefix_len] == clean_db[:prefix_len]:
+                score = 0.95
+            elif clean_ocr in clean_db or clean_db in clean_ocr:
+                score = 0.85
+            else:
+                score = SequenceMatcher(None, clean_ocr, clean_db).ratio()
 
             if score > best_score:
                 best_score = score
                 best_idx = idx
+                if score >= 0.95:
+                    break
 
         return best_idx, best_score
 
@@ -771,12 +764,6 @@ class AutoAnswerApp:
                     pre_cool = max(0.5, pre_cool)
                     post_cool = max(0, post_cool)
 
-                    try:
-                        multi_cap = int(self.multi_cap_entry.get().strip() or 3)
-                    except:
-                        multi_cap = 3
-                    multi_cap = max(1, min(multi_cap, 5))
-
                     opt_offset = int(self.opt_offset_entry.get().strip() or 200)
                     btn_offset = int(self.btn_offset_entry.get().strip() or 200)
 
@@ -795,7 +782,7 @@ class AutoAnswerApp:
                     roi_x = roi_y = ratio_x = ratio_y = 0
                     first_opt_top = None
 
-                    for search_attempt in range(3):
+                    for search_attempt in range(2):
                         cur_frame = capture_frame()
                         if cur_frame is None:
                             time.sleep(0.1)
@@ -983,18 +970,21 @@ class AutoAnswerApp:
                     # 从题库获取正确答案
                     targets = [self.clean_text(t) for t in correct_texts if t]
                     if not targets:
+                        self.log(f"答案: {', '.join(correct_texts)}")
                         _to_manual(self)
                         time.sleep(1)
                         continue
 
                     opt_list = []
-                    seen_labels = set()
+                    seen_positions = set()
                     for label, clean, x, y in all_opts:
-                        if label not in seen_labels:
+                        pos = (int(x), int(y))
+                        if pos not in seen_positions:
                             opt_list.append((label, clean, x, y))
-                            seen_labels.add(label)
+                            seen_positions.add(pos)
 
                     if not opt_list:
+                        self.log(f"答案: {', '.join(correct_texts)}")
                         _to_manual(self)
                         time.sleep(1)
                         continue
@@ -1004,37 +994,35 @@ class AutoAnswerApp:
                     for target in targets:
                         best_opt = None
                         best_sim = -1
-                        target_stripped = self.strip_option_prefix(target) if re.match(r'^[A-F]', target, re.IGNORECASE) else target
 
                         for label, clean, x, y in opt_list:
                             if (x, y) in selected_positions:
                                 continue
-                            sim = 0
-                            if clean == target or clean == target_stripped:
-                                sim = 1.0
-                            elif target in clean or clean in target or target_stripped in clean or clean in target_stripped:
-                                sim = 0.9
-                            else:
-                                sim = SequenceMatcher(None, target_stripped, clean).ratio()
-                                keywords = re.split(r'[\s,，、.。;；:：]', target_stripped)
-                                keywords = [k for k in keywords if len(k) > 1]
-                                if keywords:
-                                    longest = max(keywords, key=len)
-                                    if longest in clean:
-                                        sim = max(sim, 0.75)
-                                max_len = max(len(target_stripped), len(clean))
-                                min_len = min(len(target_stripped), len(clean))
-                                if max_len > 0 and min_len / max_len > 0.85:
-                                    sim = max(sim, 0.85)
-
-                            if sim > best_sim:
-                                best_sim = sim
+                            # 完全匹配
+                            if clean == target:
                                 best_opt = (label, x, y)
+                                best_sim = 1.0
+                                break
+                            # 包含匹配
+                            if len(target) > 2 and (target in clean or clean in target):
+                                sim = 0.9
+                                if sim > best_sim:
+                                    best_sim = sim
+                                    best_opt = (label, x, y)
+                                continue
+                            # 前缀匹配
+                            prefix_len = min(6, len(target), len(clean))
+                            if prefix_len >= 4 and target[:prefix_len] == clean[:prefix_len]:
+                                sim = 0.8
+                                if sim > best_sim:
+                                    best_sim = sim
+                                    best_opt = (label, x, y)
 
                         if best_opt and best_sim >= opt_thresh:
                             matched_opts.append(best_opt)
                             selected_positions.add((best_opt[1], best_opt[2]))
                         else:
+                            self.log(f"答案: {', '.join(correct_texts)}")
                             _to_manual(self)
                             time.sleep(1)
                             break
@@ -1042,6 +1030,7 @@ class AutoAnswerApp:
                     if len(targets) > 1:
                         matched_count = len([m for m in matched_opts if m[0] != 'J'])
                         if matched_count < len(targets):
+                            self.log(f"答案: {', '.join(correct_texts)}")
                             _to_manual(self)
                             time.sleep(1)
                             continue
@@ -1072,7 +1061,23 @@ class AutoAnswerApp:
                             ph_x = max(0, min(ph_x, PHONE_W - 1))
                             ph_y = max(0, min(ph_y, PHONE_H - 1))
                             tap_option(ph_x, ph_y)
-                            time.sleep(0.5)  # 等待点击生效
+                            time.sleep(0.5)
+
+                        # 自检：截图验证选项是否已选中
+                        if self.verify_var.get():
+                            time.sleep(0.3)
+                            vf = capture_frame()
+                            if vf is not None:
+                                vr = ocr_frame(self.ocr_engine, vf)
+                                if vr:
+                                    vtxt = " ".join([line[1] for line in vr[:8]])
+                                    # 检查是否还在当前题目（说明没选上）
+                                    if current_key[:15] in self.clean_text(vtxt):
+                                        self.log(f"答案: {', '.join(display_parts)}")
+                                        self.log("自检异常,转手动")
+                                        _to_manual(self)
+                                        time.sleep(1)
+                                        continue
 
                         # 点击下一题
                         if next_btn:
