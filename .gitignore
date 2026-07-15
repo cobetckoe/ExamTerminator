@@ -24,6 +24,13 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 
-# Config
+# Runtime
 answer_config.json
 *.log
+
+# ADB (users download their own)
+src/platform-tools/
+
+# Data files (keep only template)
+*.xlsx
+!题库模板.xlsx

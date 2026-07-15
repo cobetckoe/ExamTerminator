@@ -193,21 +193,17 @@ def tap_option(x, y):
         return False
     x = max(0, min(x, PHONE_W - 1))
     y = max(0, min(y, PHONE_H - 1))
-    # 重试3次，第3次重启ADB
     for attempt in range(3):
         try:
-            result = subprocess.run(
+            subprocess.Popen(
                 [ADB_PATH, "shell", "input", "tap", str(x), str(y)],
-                capture_output=True, text=True, timeout=10
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
             )
-            return result.returncode == 0
+            return True
         except:
-            if attempt < 2:
-                time.sleep(0.5)
-            else:
-                # 最后一次尝试，重启ADB
+            if attempt >= 2:
                 restart_adb()
-                time.sleep(1)
+            time.sleep(0.3)
     return False
 
 def wake_screen():
@@ -215,8 +211,8 @@ def wake_screen():
     if not ADB_PATH:
         return
     try:
-        subprocess.run([ADB_PATH, "shell", "input", "keyevent", "224"], capture_output=True, timeout=5)
-        subprocess.run([ADB_PATH, "shell", "input", "keyevent", "82"], capture_output=True, timeout=5)
+        subprocess.Popen([ADB_PATH, "shell", "input", "keyevent", "224"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen([ADB_PATH, "shell", "input", "keyevent", "82"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except:
         pass
 
@@ -591,27 +587,26 @@ class AutoAnswerApp:
             return {}
         s = str(opt_str).strip()
         result = {}
-        if '|' in s:
-            parts = s.split('|')
-            for part in parts:
-                part = part.strip()
-                if not part:
-                    continue
-                m = re.match(r'^([A-F])\s*[-\.、．:：]?\s*(.*)', part, re.IGNORECASE)
-                if m:
-                    result[m.group(1).upper()] = m.group(2).strip()
-                else:
-                    m2 = re.match(r'^([A-F])\s*(.*)', part, re.IGNORECASE)
-                    if m2:
-                        result[m2.group(1).upper()] = m2.group(2).strip()
-            if result:
-                return result
-        pattern = re.compile(r'([A-F])\s*[\.、．:：\-]\s*([^A-F]*?)(?=\s*[A-F]\s*[\.、．:：\-]|$)', re.IGNORECASE | re.DOTALL)
+        # 按常见分隔符拆分
+        for sep in ['|', '\n', '；', ';']:
+            if sep in s:
+                parts = s.split(sep)
+                for part in parts:
+                    part = part.strip()
+                    if not part:
+                        continue
+                    m = re.match(r'^([A-F])\s*[-\.、．:：（\(]?\s*(.*)', part, re.IGNORECASE)
+                    if m:
+                        result[m.group(1).upper()] = m.group(2).strip().rstrip('）\)')
+                if result:
+                    return result
+        # 正则提取 A.xxx B.xxx 格式
+        pattern = re.compile(r'([A-F])\s*[\.、．:：\-（\(]\s*([^A-F]*?)(?=\s*[A-F]\s*[\.、．:：\-（\(]|$)', re.IGNORECASE | re.DOTALL)
         matches = pattern.findall(s)
         if matches:
             for letter, content in matches:
                 letter = letter.strip().upper()
-                content = content.strip()
+                content = content.strip().rstrip('）\)')
                 if content:
                     result[letter] = content
             return result
@@ -643,15 +638,10 @@ class AutoAnswerApp:
             if len(letters) == 1 and len(letters[0]) > 1:
                 letters = list(letters[0])
             for l in letters:
-                if l in opt_map:
+                if l in opt_map and opt_map[l]:
                     texts.append(opt_map[l])
-                else:
-                    texts.append(l)
         else:
             texts = [ans_str] if ans_str else []
-
-        if not texts and ans_str:
-            texts = [ans_str]
         self.cache[idx] = texts
         return texts
 
@@ -791,7 +781,7 @@ class AutoAnswerApp:
                     # === 搜题重试循环：截图OCR+搜题库，最多3次 ===
                     wake_screen()  # 每道题唤醒一次
                     if self.first_loop:
-                        time.sleep(1)  # 首题多等1秒，等摄像头就绪
+                        time.sleep(1)
                     best_idx = None
                     score = 0
                     question = ""
@@ -860,9 +850,13 @@ class AutoAnswerApp:
                                 continue
                             m = re.match(r'^([A-F])\s*[\.、．:：\-]?\s*(.*)', txt, re.IGNORECASE)
                             if m:
-                                options.append((m.group(1).upper(), m.group(2), (item['x']+item['w']//2, item['y']+item['h']//2)))
+                                cx = item['x'] + item['w'] // 2
+                                cy = item['y'] + item['h'] // 2
+                                options.append((m.group(1).upper(), m.group(2), (cx, cy)))
                             elif txt in judge_keywords:
-                                options.append(('J', txt, (item['x']+item['w']//2, item['y']+item['h']//2)))
+                                cx = item['x'] + item['w'] // 2
+                                cy = item['y'] + item['h'] // 2
+                                options.append(('J', txt, (cx, cy)))
                             else:
                                 q_blocks.append(item)
 
@@ -971,21 +965,16 @@ class AutoAnswerApp:
 
                     correct_texts = self.get_correct_texts(best_idx)
                     if not correct_texts:
-                        row = self.df.iloc[best_idx]
-                        raw_ans = str(row['answer_letter']).strip()
-                        if raw_ans:
-                            correct_texts = [raw_ans]
-                        else:
-                            _to_manual(self)
-                            time.sleep(1)
-                            continue
+                        _to_manual(self)
+                        time.sleep(1)
+                        continue
 
                     all_opts = []
                     for label, text, (x, y) in options:
                         clean = self.clean_text(text)
                         if not clean:
                             continue
-                        all_opts.append((label, clean, x-30, y))
+                        all_opts.append((label, clean, x, y))
 
                     matched_opts = []
 
@@ -1008,7 +997,7 @@ class AutoAnswerApp:
                         time.sleep(1)
                         continue
 
-                    selected_labels = set()
+                    selected_positions = set()
 
                     for target in targets:
                         best_opt = None
@@ -1016,7 +1005,7 @@ class AutoAnswerApp:
                         target_stripped = self.strip_option_prefix(target) if re.match(r'^[A-F]', target, re.IGNORECASE) else target
 
                         for label, clean, x, y in opt_list:
-                            if label in selected_labels:
+                            if (x, y) in selected_positions:
                                 continue
                             sim = 0
                             if clean == target or clean == target_stripped:
@@ -1042,7 +1031,7 @@ class AutoAnswerApp:
 
                         if best_opt and best_sim >= opt_thresh:
                             matched_opts.append(best_opt)
-                            selected_labels.add(best_opt[0])
+                            selected_positions.add((best_opt[1], best_opt[2]))
                         else:
                             _to_manual(self)
                             time.sleep(1)
@@ -1051,76 +1040,41 @@ class AutoAnswerApp:
                     if len(targets) > 1:
                         matched_count = len([m for m in matched_opts if m[0] != 'J'])
                         if matched_count < len(targets):
-                            self.log(f"多选匹配不完整({matched_count}/{len(targets)})，转手动")
                             _to_manual(self)
                             time.sleep(1)
                             continue
 
-                    # 答案显示：字母用试卷OCR识别的，内容用题库的
-                    # matched_opts[i] 与 correct_texts[i] 按顺序对应
+                    # 答案显示
                     if matched_opts:
                         display_parts = []
                         for i, (label, x, y) in enumerate(matched_opts):
                             opt_text = correct_texts[i].strip() if i < len(correct_texts) else ""
                             display_parts.append(f"{label}. {opt_text}" if opt_text else label)
-                        answer_str = ", ".join(display_parts)
-                        self.log(f"答案: {answer_str}")
+                        self.log(f"答案: {', '.join(display_parts)}")
                     else:
-                        self.log("未匹配到选项，转手动")
                         _to_manual(self)
                         time.sleep(1)
                         continue
 
                     if self.mode == "auto":
                         if not ADB_PATH:
-                            self.log("未找到ADB")
                             self.mode = "manual"
                             self.mode_var.set("manual")
                             time.sleep(1)
                             continue
 
-                        # 每个选项点击前重新截图定位
+                        # 点击选项（复用已有坐标）
                         for label, x, y in matched_opts:
-                            # 重新截图找此选项的最新坐标
-                            # 判断题用文本匹配兜底
-                            target_text = None
-                            if label == 'J':
-                                row = self.df.iloc[best_idx]
-                                opt_map = self.parse_options_with_letters(str(row['options_str']))
-                                ans_str = str(row['answer_letter']).strip().upper()
-                                target_text = opt_map.get(ans_str, "")
-                            fresh_pos = fresh_find_option(self.ocr_engine, label, target_text)
-                            if fresh_pos:
-                                cx, cy = fresh_pos
-                                ph_x = int((cx - roi_x) * ratio_x)
-                                ph_y = int((cy - roi_y) * ratio_y) + opt_offset
-                                ph_x = max(0, min(ph_x, PHONE_W - 1))
-                                ph_y = max(0, min(ph_y, PHONE_H - 1))
-
-                                tap_option(ph_x, ph_y)
-                            else:
-                                # 找不到就用旧坐标兜底
-                                ph_x = int((x - roi_x) * ratio_x)
-                                ph_y = int((y - roi_y) * ratio_y) + opt_offset
-                                ph_x = max(0, min(ph_x, PHONE_W - 1))
-                                ph_y = max(0, min(ph_y, PHONE_H - 1))
-
-                                tap_option(ph_x, ph_y)
-                            time.sleep(0.1)
+                            ph_x = int((x - roi_x) * ratio_x)
+                            ph_y = int((y - roi_y) * ratio_y) + opt_offset
+                            ph_x = max(0, min(ph_x, PHONE_W - 1))
+                            ph_y = max(0, min(ph_y, PHONE_H - 1))
+                            tap_option(ph_x, ph_y)
 
                         time.sleep(0.1)
 
-                        # 重新截图找下一题按钮
-                        fresh_next = fresh_find_button(self.ocr_engine, ['下一题', '下一页', '下一'])
-                        if fresh_next:
-                            cx, cy = fresh_next
-                            pb_x = int((cx - roi_x) * ratio_x)
-                            pb_y = int((cy - roi_y) * ratio_y) + btn_offset
-                            pb_x = max(0, min(pb_x, PHONE_W - 1))
-                            pb_y = max(0, min(pb_y, PHONE_H - 1))
-                            tap_option(pb_x, pb_y)
-                        elif next_btn:
-                            # 用旧坐标兜底
+                        # 点击下一题
+                        if next_btn:
                             nx, ny = next_btn
                             pb_x = int((nx - roi_x) * ratio_x)
                             pb_y = int((ny - roi_y) * ratio_y) + btn_offset
@@ -1137,13 +1091,12 @@ class AutoAnswerApp:
                     self._repeat_notified = False
                     self.first_loop = False
 
-                except Exception as e:
+                except Exception:
                     _to_manual(self)
                     wake_screen()
                     time.sleep(1)
 
-        except Exception as e:
-            self.log("异常")
+        except Exception:
             wake_screen()
 
 if __name__ == "__main__":
