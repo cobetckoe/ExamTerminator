@@ -959,39 +959,7 @@ class AutoAnswerApp:
 
                     self.last_question_key = current_key
 
-                    if best_idx in self.processed_indices:
-                        self.same_index_counter[best_idx] = self.same_index_counter.get(best_idx, 0) + 1
-                        if self.same_index_counter[best_idx] >= 3:
-                            self.same_index_counter[best_idx] = 0
-                        if self.mode == "auto":
-                            correct_texts = self.get_correct_texts(best_idx)
-                            if correct_texts:
-                                self.log(self.format_answer(correct_texts, options))
-                            if next_btn:
-                                nx, ny = next_btn
-                                pb_x = int((nx - roi_x) * ratio_x)
-                                pb_y = int((ny - roi_y) * ratio_y) + btn_offset
-                                pb_x = max(0, min(pb_x, PHONE_W - 1))
-                                pb_y = max(0, min(pb_y, PHONE_H - 1))
-
-                                tap_option(pb_x, pb_y)
-                            time.sleep(pre_cool)
-                        else:
-                            correct_texts = self.get_correct_texts(best_idx)
-                            if correct_texts:
-                                self.log(self.format_answer(correct_texts, options))
-                            if not self._repeat_notified:
-                                self._repeat_notified = True
-                            time.sleep(1)
-                        self.last_question_key = ""
-                        self.same_index_counter.clear()
-                        continue
-                    else:
-                        self._repeat_notified = False
-
-                    self.processed_indices.add(best_idx)
-                    self.same_index_counter[best_idx] = 0
-
+                    # === 选项匹配（两种模式共用） ===
                     correct_texts = self.get_correct_texts(best_idx)
                     if not correct_texts:
                         _to_manual(self)
@@ -1006,8 +974,6 @@ class AutoAnswerApp:
                         all_opts.append((label, clean, x, y))
 
                     matched_opts = []
-
-                    # 从题库获取正确答案
                     targets = [self.clean_text(t) for t in correct_texts if t]
                     if not targets:
                         _to_manual(self)
@@ -1027,7 +993,6 @@ class AutoAnswerApp:
                         continue
 
                     selected_positions = set()
-
                     for target in targets:
                         best_opt = None
                         best_sim = -1
@@ -1073,17 +1038,58 @@ class AutoAnswerApp:
                             time.sleep(1)
                             continue
 
-                    # 答案显示
-                    if matched_opts:
-                        is_first = self.first_loop
-                        if is_first:
-                            self.log("首题已识别，手动翻页后开始自动答题")
-                            self.first_loop = False
-                        self.log(self.format_answer(correct_texts, options))
-                    else:
+                    if not matched_opts:
                         _to_manual(self)
                         time.sleep(1)
                         continue
+
+                    # === 重复识别处理 ===
+                    if best_idx in self.processed_indices:
+                        self.same_index_counter[best_idx] = self.same_index_counter.get(best_idx, 0) + 1
+                        if self.same_index_counter[best_idx] >= 3:
+                            self.same_index_counter[best_idx] = 0
+
+                        self.log(self.format_answer(correct_texts, options))
+
+                        if self.mode == "auto":
+                            is_multi = len(correct_texts) > 1
+                            # 多选重复点会取消选中，只点下一题；单选判断重复点无害，正常答
+                            if not is_multi:
+                                for label, x, y in matched_opts:
+                                    ph_x = int((x - roi_x) * ratio_x)
+                                    ph_y = int((y - roi_y) * ratio_y) + opt_offset
+                                    ph_x = max(0, min(ph_x, PHONE_W - 1))
+                                    ph_y = max(0, min(ph_y, PHONE_H - 1))
+                                    tap_option(ph_x, ph_y)
+                                    time.sleep(0.5)
+                            if next_btn:
+                                nx, ny = next_btn
+                                pb_x = int((nx - roi_x) * ratio_x)
+                                pb_y = int((ny - roi_y) * ratio_y) + btn_offset
+                                pb_x = max(0, min(pb_x, PHONE_W - 1))
+                                pb_y = max(0, min(pb_y, PHONE_H - 1))
+                                tap_option(pb_x, pb_y)
+                            time.sleep(pre_cool)
+                        else:
+                            if not self._repeat_notified:
+                                self._repeat_notified = True
+                            time.sleep(1)
+                        self.last_question_key = ""
+                        self.same_index_counter.clear()
+                        continue
+                    else:
+                        self._repeat_notified = False
+
+                    # === 新题处理 ===
+                    self.processed_indices.add(best_idx)
+                    self.same_index_counter[best_idx] = 0
+
+                    # 答案显示
+                    is_first = self.first_loop
+                    if is_first:
+                        self.log("首题已识别，手动翻页后开始自动答题")
+                        self.first_loop = False
+                    self.log(self.format_answer(correct_texts, options))
 
                     if self.mode == "auto":
                         if not ADB_PATH:
