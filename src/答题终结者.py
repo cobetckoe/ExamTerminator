@@ -269,7 +269,7 @@ class AutoAnswerApp:
         global _app_ref
         _app_ref = self
         self.root = root
-        self.root.title("答题终结者")
+        self.root.title("答题终结者 T-888型")
         self.root.geometry("860x680")
         self.root.minsize(750, 580)
 
