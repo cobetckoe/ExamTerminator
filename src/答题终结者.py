@@ -983,7 +983,7 @@ class AutoAnswerApp:
                     opt_list = []
                     seen_labels = set()
                     for label, clean, x, y in all_opts:
-                        if label not in seen_labels:
+                        if label not in seen_labels or label == 'J':
                             opt_list.append((label, clean, x, y))
                             seen_labels.add(label)
 
