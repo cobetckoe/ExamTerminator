@@ -17,9 +17,6 @@ from collections import Counter
 
 CONFIG_FILE = "answer_config.json"
 
-# Windows隐藏子进程窗口
-_CREATION_FLAGS = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-
 # ---------- ADB ----------
 def find_adb():
     # exe 运行时，从 exe 所在目录或临时解压目录找
@@ -45,8 +42,8 @@ def restart_adb():
     if not ADB_PATH:
         return False
     try:
-        subprocess.run([ADB_PATH, "kill-server"], capture_output=True, timeout=5, creationflags=_CREATION_FLAGS)
-        subprocess.run([ADB_PATH, "start-server"], capture_output=True, timeout=10, creationflags=_CREATION_FLAGS)
+        subprocess.run([ADB_PATH, "kill-server"], capture_output=True, timeout=5)
+        subprocess.run([ADB_PATH, "start-server"], capture_output=True, timeout=10)
         return True
     except:
         return False
@@ -79,7 +76,7 @@ def _init_adb():
     # 重试3次获取分辨率
     for attempt in range(3):
         try:
-            res = subprocess.run([ADB_PATH, "shell", "wm", "size"], capture_output=True, text=True, timeout=10, creationflags=_CREATION_FLAGS)
+            res = subprocess.run([ADB_PATH, "shell", "wm", "size"], capture_output=True, text=True, timeout=10)
             match = re.search(r'(\d+)x(\d+)', res.stdout)
             if match:
                 PHONE_W, PHONE_H = int(match.group(1)), int(match.group(2))
@@ -89,8 +86,8 @@ def _init_adb():
                 time.sleep(1)
                 # 重启ADB服务
                 try:
-                    subprocess.run([ADB_PATH, "kill-server"], capture_output=True, timeout=5, creationflags=_CREATION_FLAGS)
-                    subprocess.run([ADB_PATH, "start-server"], capture_output=True, timeout=10, creationflags=_CREATION_FLAGS)
+                    subprocess.run([ADB_PATH, "kill-server"], capture_output=True, timeout=5)
+                    subprocess.run([ADB_PATH, "start-server"], capture_output=True, timeout=10)
                 except:
                     pass
     _adb_inited = True
@@ -200,8 +197,7 @@ def tap_option(x, y):
         try:
             subprocess.Popen(
                 [ADB_PATH, "shell", "input", "tap", str(x), str(y)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                creationflags=_CREATION_FLAGS
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
             )
             return True
         except:
@@ -215,8 +211,8 @@ def wake_screen():
     if not ADB_PATH:
         return
     try:
-        subprocess.run([ADB_PATH, "shell", "svc", "power", "stayon", "usb"], capture_output=True, timeout=3, creationflags=_CREATION_FLAGS)
-        subprocess.run([ADB_PATH, "shell", "settings", "put", "system", "screen_off_timeout", "2147483647"], capture_output=True, timeout=3, creationflags=_CREATION_FLAGS)
+        subprocess.run([ADB_PATH, "shell", "svc", "power", "stayon", "usb"], capture_output=True, timeout=3)
+        subprocess.run([ADB_PATH, "shell", "settings", "put", "system", "screen_off_timeout", "2147483647"], capture_output=True, timeout=3)
     except:
         pass
 
@@ -522,10 +518,10 @@ class AutoAnswerApp:
         try:
             # 先尝试重启ADB服务
             self.log("正在测试ADB连接...")
-            subprocess.run([ADB_PATH, "kill-server"], capture_output=True, timeout=5, creationflags=_CREATION_FLAGS)
-            subprocess.run([ADB_PATH, "start-server"], capture_output=True, timeout=10, creationflags=_CREATION_FLAGS)
+            subprocess.run([ADB_PATH, "kill-server"], capture_output=True, timeout=5)
+            subprocess.run([ADB_PATH, "start-server"], capture_output=True, timeout=10)
             
-            res = subprocess.run([ADB_PATH, "devices"], capture_output=True, text=True, timeout=10, creationflags=_CREATION_FLAGS)
+            res = subprocess.run([ADB_PATH, "devices"], capture_output=True, text=True, timeout=10)
             lines = [l for l in res.stdout.strip().split('\n')[1:] if l.strip()]
             if not lines:
                 self.log("未检测到设备")
@@ -540,7 +536,7 @@ class AutoAnswerApp:
                     elif state == "offline":
                         self.log("设备离线")
                         return
-            test = subprocess.run([ADB_PATH, "shell", "getprop", "ro.product.model"], capture_output=True, text=True, timeout=10, creationflags=_CREATION_FLAGS)
+            test = subprocess.run([ADB_PATH, "shell", "getprop", "ro.product.model"], capture_output=True, text=True, timeout=10)
             if test.returncode == 0 and test.stdout.strip():
                 self.log(f"ADB正常: {test.stdout.strip()}")
             else:
@@ -548,8 +544,8 @@ class AutoAnswerApp:
         except subprocess.TimeoutExpired:
             self.log("ADB超时")
             try:
-                subprocess.run([ADB_PATH, "kill-server"], capture_output=True, timeout=5, creationflags=_CREATION_FLAGS)
-                subprocess.run([ADB_PATH, "start-server"], capture_output=True, timeout=10, creationflags=_CREATION_FLAGS)
+                subprocess.run([ADB_PATH, "kill-server"], capture_output=True, timeout=5)
+                subprocess.run([ADB_PATH, "start-server"], capture_output=True, timeout=10)
                 self.log("ADB服务已重启")
             except:
                 self.log("无法重启ADB服务")
@@ -1136,21 +1132,7 @@ class AutoAnswerApp:
         except Exception:
             wake_screen()
 
-def cleanup():
-    """清理PyInstaller临时文件"""
-    if getattr(sys, 'frozen', False):
-        import shutil
-        meipass = getattr(sys, '_MEIPASS', None)
-        if meipass and os.path.exists(meipass):
-            try:
-                shutil.rmtree(meipass, ignore_errors=True)
-            except:
-                pass
-
 if __name__ == "__main__":
-    import atexit
-    atexit.register(cleanup)
-    
     root = tk.Tk()
     app = AutoAnswerApp(root)
     root.mainloop()
