@@ -1049,8 +1049,6 @@ class AutoAnswerApp:
                         if self.same_index_counter[best_idx] >= 3:
                             self.same_index_counter[best_idx] = 0
 
-                        self.log(self.format_answer(correct_texts, options))
-
                         if self.mode == "auto":
                             is_multi = len(correct_texts) > 1
                             # 多选重复点会取消选中，只点下一题；单选判断重复点无害，正常答
