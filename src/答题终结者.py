@@ -7,8 +7,9 @@ import os
 import sys
 import time
 import re
+import gc
 import subprocess
-from difflib import SequenceMatcher, get_close_matches
+from difflib import SequenceMatcher
 import cv2
 import numpy as np
 import pandas as pd
@@ -16,6 +17,7 @@ from rapidocr_onnxruntime import RapidOCR
 from collections import Counter
 
 CONFIG_FILE = "answer_config.json"
+_CLEAN_RE = re.compile(r'[\s\.\,\。\，\：\、\（\）\《\》\「\」\-\_\?\？\!\！\~\～\'\"\']')
 
 # ---------- ADB ----------
 def find_adb():
@@ -216,54 +218,6 @@ def wake_screen():
     except:
         pass
 
-def fresh_find_option(ocr_engine, target_label, target_text=None):
-    """OCR找到指定选项坐标，重新截图保证实时"""
-    frame = capture_frame()
-    if frame is None:
-        return None
-    result = ocr_frame(ocr_engine, frame)
-    if not result:
-        return None
-    for line in result:
-        box = line[0]
-        text = line[1].strip()
-        # 按字母匹配（A. xxx）
-        m = re.match(r'^([A-F])\s*[\.、．:：\-]?\s*', text, re.IGNORECASE)
-        if m and m.group(1).upper() == target_label.upper():
-            xs = [pt[0] for pt in box]
-            ys = [pt[1] for pt in box]
-            cx = (min(xs) + max(xs)) // 2
-            cy = (min(ys) + max(ys)) // 2
-            return (cx, cy)
-        # 按文本匹配（判断题 正确/错误）
-        if target_text and text.strip() == target_text:
-            xs = [pt[0] for pt in box]
-            ys = [pt[1] for pt in box]
-            cx = (min(xs) + max(xs)) // 2
-            cy = (min(ys) + max(ys)) // 2
-            return (cx, cy)
-    return None
-
-def fresh_find_button(ocr_engine, keywords):
-    """OCR找到包含关键词的按钮坐标，重新截图"""
-    frame = capture_frame()
-    if frame is None:
-        return None
-    result = ocr_frame(ocr_engine, frame)
-    if not result:
-        return None
-    for line in result:
-        box = line[0]
-        text = line[1].strip()
-        if any(kw in text for kw in keywords):
-            xs = [pt[0] for pt in box]
-            ys = [pt[1] for pt in box]
-            cx = (min(xs) + max(xs)) // 2
-            cy = (min(ys) + max(ys)) // 2
-            return (cx, cy)
-    return None
-
-
 class AutoAnswerApp:
     def __init__(self, root):
         global _app_ref
@@ -287,6 +241,7 @@ class AutoAnswerApp:
         # 坐标系校准缓存：首次OCR后锁定，后续题目复用
         self.calibration = None  # {"roi_x", "roi_y", "ratio_x", "ratio_y"}
 
+        self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
         self.create_widgets()
         self.load_config()
         self.process_log_queue()
@@ -575,7 +530,8 @@ class AutoAnswerApp:
             self.last_question_key = ""
             self.same_index_counter.clear()
             self.first_loop = True
-            self.log(f"题库加载完成")
+            self._clean_questions = [self.clean_text(str(q)) for q in self.df['question']]
+            self.log("题库加载完成")
         except Exception as e:
             messagebox.showerror("错误", f"读取失败: {e}")
 
@@ -643,10 +599,7 @@ class AutoAnswerApp:
         return texts
 
     def clean_text(self, text):
-        # 去OCR噪声：多余空格、全角/半角混用的标点、引号
-        # 保留数字、中文、字母用于匹配
-        text = re.sub(r'[\s\.\,\。\，\：\、\（\）\《\》\「\」\-\_\?\？\!\！\~\～\'\"\']', '', text)
-        return text
+        return _CLEAN_RE.sub('', text)
 
     def format_answer(self, correct_texts, screen_options):
         """统一答案显示：从屏幕选项匹配字母，格式 A.xxx"""
@@ -691,29 +644,35 @@ class AutoAnswerApp:
         if not clean_ocr or len(clean_ocr) < 3:
             return None, 0
 
-        for idx, row in self.df.iterrows():
-            clean_db = self.clean_text(str(row['question']))
-            if not clean_db or len(clean_db) < 3:
+        len_ocr = len(clean_ocr)
+        for idx, clean_db in enumerate(self._clean_questions):
+            if len(clean_db) < 3:
                 continue
 
             score1 = SequenceMatcher(None, clean_ocr, clean_db).ratio()
 
-            # 包含关系加分
             score2 = 0
             if clean_ocr in clean_db:
-                score2 = 0.8 * (len(clean_ocr) / len(clean_db))
+                score2 = 0.7 + 0.3 * (len_ocr / len(clean_db))
             elif clean_db in clean_ocr:
-                score2 = 0.8 * (len(clean_db) / len(clean_ocr))
+                score2 = 0.7 + 0.3 * (len(clean_db) / len_ocr)
 
-            # 前缀匹配
-            prefix_len = min(15, len(clean_ocr), len(clean_db))
-            score3 = 1.0 if clean_ocr[:prefix_len] == clean_db[:prefix_len] else 0
+            match_len = 0
+            for a, b in zip(clean_ocr, clean_db):
+                if a == b:
+                    match_len += 1
+                else:
+                    break
+            min_len = min(len_ocr, len(clean_db))
+            score3 = match_len / min_len if min_len > 0 else 0
 
-            score = max(score1, score2, score3 * 0.9)
+            score = max(score1, score2, score3)
 
             if score > best_score:
                 best_score = score
                 best_idx = idx
+                if score >= 1.0:
+                    break
 
         return best_idx, best_score
 
@@ -755,6 +714,22 @@ class AutoAnswerApp:
         self.running = False
         self.start_btn.config(state=tk.NORMAL)
         self.stop_btn.config(state=tk.DISABLED)
+
+    def _on_closing(self):
+        self.running = False
+        global cap
+        if cap is not None:
+            cap.release()
+            cap = None
+        # 释放OCR引擎，解锁临时目录中的模型文件
+        if self.ocr_engine is not None:
+            try:
+                del self.ocr_engine
+            except:
+                pass
+            self.ocr_engine = None
+            gc.collect()
+        self.root.destroy()
 
     def _on_mode_change(self):
         self.mode = self.mode_var.get()
@@ -843,6 +818,7 @@ class AutoAnswerApp:
                         # 合并相邻的选项字母和内容
                         merged = []
                         skip = set()
+                        judge_keywords = {'对', '错', '正确', '错误', '√', '×'}
                         for i, item in enumerate(items):
                             if i in skip:
                                 continue
@@ -858,13 +834,25 @@ class AutoAnswerApp:
                                     })
                                     skip.add(i+1)
                                     continue
+                            # 圆圈标识（○●）+ 判断题内容，合并为一个选项
+                            if item['text'] in {'○', '●', '◯', '•', '·'} and i+1 < len(items):
+                                nxt = items[i+1]
+                                if nxt['y'] - item['y'] < 30 and nxt['text'] in judge_keywords:
+                                    merged.append({
+                                        "text": nxt['text'],
+                                        "x": item['x'], "y": item['y'],
+                                        "w": nxt['x']+nxt['w']-item['x'],
+                                        "h": nxt['y']+nxt['h']-item['y'],
+                                        "score": min(item.get('score', 1), nxt.get('score', 1))
+                                    })
+                                    skip.add(i+1)
+                                    continue
                             merged.append(item)
                         items = merged
 
                         options = []
                         q_blocks = []
                         next_btn = None
-                        judge_keywords = {'对', '错', '正确', '错误', '√', '×'}
 
                         for item in items:
                             txt = item['text'].strip()
