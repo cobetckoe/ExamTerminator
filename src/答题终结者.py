@@ -656,7 +656,7 @@ class AutoAnswerApp:
             ct_clean = self.clean_text(ct)
             found_label = None
             for label, text, *_ in screen_options:
-                if not text or label in used_labels:
+                if not text or (label in used_labels and label != 'J'):
                     continue
                 text_clean = self.clean_text(text)
                 if text_clean == ct_clean:
@@ -664,7 +664,7 @@ class AutoAnswerApp:
                     break
             if not found_label and len(ct_clean) >= 3:
                 for label, text, *_ in screen_options:
-                    if not text or label in used_labels:
+                    if not text or (label in used_labels and label != 'J'):
                         continue
                     text_clean = self.clean_text(text)
                     if len(text_clean) >= 3 and (ct_clean in text_clean or text_clean in ct_clean):
@@ -964,6 +964,9 @@ class AutoAnswerApp:
                         if self.same_index_counter[best_idx] >= 3:
                             self.same_index_counter[best_idx] = 0
                         if self.mode == "auto":
+                            correct_texts = self.get_correct_texts(best_idx)
+                            if correct_texts:
+                                self.log(self.format_answer(correct_texts, options))
                             if next_btn:
                                 nx, ny = next_btn
                                 pb_x = int((nx - roi_x) * ratio_x)
