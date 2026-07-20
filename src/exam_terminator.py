@@ -18,6 +18,7 @@ from collections import Counter
 
 CONFIG_FILE = "answer_config.json"
 _CLEAN_RE = re.compile(r'[\s\.\,\。\，\：\、\（\）\《\》\「\」\-\_\?\？\!\！\~\～\'\"\']')
+_JUDGE_KW = {'对', '错', '正确', '错误', '√', '×', '○', '●', '◯', '•', '·'}
 
 # ---------- ADB ----------
 def find_adb():
@@ -50,9 +51,11 @@ def restart_adb():
     except:
         return False
 
-def _to_manual(app):
-    """转手动模式"""
-    app.log("→ 手动模式")
+def _to_manual(app, reason=""):
+    msg = "手动模式"
+    if reason:
+        msg += f"：{reason}"
+    app.log(msg)
     app.mode = "manual"
     app.mode_var.set("manual")
     app.last_question_key = ""
@@ -234,12 +237,9 @@ class AutoAnswerApp:
         self.processed_indices = set()
         self.ocr_engine = None
         self.last_question_key = ""
-        self.same_index_counter = {}
         self.first_loop = True
         self.mode = "auto"
-        self._repeat_notified = False
-        # 坐标系校准缓存：首次OCR后锁定，后续题目复用
-        self.calibration = None  # {"roi_x", "roi_y", "ratio_x", "ratio_y"}
+        self.calibration = None
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
         self.create_widgets()
@@ -262,16 +262,11 @@ class AutoAnswerApp:
         # === 主体两栏布局 ===
         body = ttk.Frame(main)
         body.pack(fill="both", expand=True, pady=(8, 0))
-        body.columnconfigure(0, weight=0, minsize=380)
-        body.columnconfigure(1, weight=1)
-        body.rowconfigure(0, weight=1)
 
         left = ttk.Frame(body)
-        left.grid(row=0, column=0, sticky="n", padx=(0, 10))
+        left.pack(side="left", fill="y", padx=(0, 10))
         right = ttk.Frame(body)
-        right.grid(row=0, column=1, sticky="nsew")
-        right.columnconfigure(0, weight=1)
-        right.rowconfigure(0, weight=1)
+        right.pack(fill="both", expand=True)
 
         # ===== 左栏 =====
 
@@ -362,8 +357,8 @@ class AutoAnswerApp:
         self.mode_var = tk.StringVar(value="auto")
         mode_frame = ttk.Frame(f_dev)
         mode_frame.grid(row=1, column=1, sticky="w", pady=4)
-        ttk.Radiobutton(mode_frame, text="自动", variable=self.mode_var, value="auto", command=self._on_mode_change).pack(side="left")
-        ttk.Radiobutton(mode_frame, text="手动", variable=self.mode_var, value="manual", command=self._on_mode_change).pack(side="left", padx=(12, 0))
+        ttk.Radiobutton(mode_frame, text="自动", variable=self.mode_var, value="auto").pack(side="left")
+        ttk.Radiobutton(mode_frame, text="手动", variable=self.mode_var, value="manual").pack(side="left", padx=(12, 0))
 
         self.consensus_var = tk.BooleanVar(value=False)
         ttk.Label(f_dev, text="多次识别", width=8, anchor="e").grid(row=2, column=0, sticky="e", padx=(0, 4), pady=4)
@@ -384,12 +379,10 @@ class AutoAnswerApp:
 
         # ===== 右栏：运行日志 =====
         f_log = ttk.LabelFrame(right, text=" 运行日志 ", padding="8 6")
-        f_log.grid(row=0, column=0, sticky="nsew")
-        f_log.columnconfigure(0, weight=1)
-        f_log.rowconfigure(0, weight=1)
+        f_log.pack(fill="both", expand=True)
 
-        self.log_area = scrolledtext.ScrolledText(f_log, font=("Consolas", 9), height=20)
-        self.log_area.grid(row=0, column=0, sticky="nsew")
+        self.log_area = scrolledtext.ScrolledText(f_log, font=("Consolas", 9))
+        self.log_area.pack(fill="both", expand=True)
 
     def load_config(self):
         if not os.path.exists(CONFIG_FILE):
@@ -528,7 +521,6 @@ class AutoAnswerApp:
             self.cache = {}
             self.processed_indices.clear()
             self.last_question_key = ""
-            self.same_index_counter.clear()
             self.first_loop = True
             self._clean_questions = [self.clean_text(str(q)) for q in self.df['question']]
             self.log("题库加载完成")
@@ -601,42 +593,6 @@ class AutoAnswerApp:
     def clean_text(self, text):
         return _CLEAN_RE.sub('', text)
 
-    def format_answer(self, correct_texts, screen_options):
-        """统一答案显示：从屏幕选项匹配字母，格式 A.xxx"""
-        parts = []
-        used_labels = set()
-        for ct in correct_texts:
-            ct_clean = self.clean_text(ct)
-            found_label = None
-            for label, text, *_ in screen_options:
-                if not text or (label in used_labels and label != 'J'):
-                    continue
-                text_clean = self.clean_text(text)
-                if text_clean == ct_clean:
-                    found_label = label
-                    break
-            if not found_label and len(ct_clean) >= 3:
-                for label, text, *_ in screen_options:
-                    if not text or (label in used_labels and label != 'J'):
-                        continue
-                    text_clean = self.clean_text(text)
-                    if len(text_clean) >= 3 and (ct_clean in text_clean or text_clean in ct_clean):
-                        found_label = label
-                        break
-            if found_label:
-                used_labels.add(found_label)
-                parts.append(f"{found_label}.{ct}")
-            else:
-                parts.append(ct)
-        return "答案: " + " ".join(parts)
-
-    def strip_option_prefix(self, text):
-        """去掉选项字母前缀 (如 'A. xxx' → 'xxx')，用于与题库选项内容对齐"""
-        m = re.match(r'^[A-F]\s*[\.、．:：\-]?\s*(.*)', text, re.IGNORECASE)
-        if m:
-            return m.group(1).strip()
-        return text
-
     def match_question(self, ocr_q, threshold):
         best_score = 0
         best_idx = None
@@ -697,15 +653,12 @@ class AutoAnswerApp:
         while not _adb_inited and wait < 20:
             time.sleep(0.1)
             wait += 1
-        self.mode = self.mode_var.get()
         self.running = True
         self.processed_indices.clear()
         self.last_question_key = ""
-        self.same_index_counter.clear()
         self.first_loop = True
-        self._repeat_notified = False
         self.cache.clear()
-        self.calibration = None  # 重置坐标校准
+        self.calibration = None
         self.start_btn.config(state=tk.DISABLED)
         self.stop_btn.config(state=tk.NORMAL)
         threading.Thread(target=self.run_loop, daemon=True).start()
@@ -721,7 +674,6 @@ class AutoAnswerApp:
         if cap is not None:
             cap.release()
             cap = None
-        # 释放OCR引擎，解锁临时目录中的模型文件
         if self.ocr_engine is not None:
             try:
                 del self.ocr_engine
@@ -730,9 +682,7 @@ class AutoAnswerApp:
             self.ocr_engine = None
             gc.collect()
         self.root.destroy()
-
-    def _on_mode_change(self):
-        self.mode = self.mode_var.get()
+        self.root.after(200, lambda: os._exit(0))
 
     def _refresh_cameras(self):
         """后台摄像头检测完成后刷新下拉框"""
@@ -743,7 +693,6 @@ class AutoAnswerApp:
 
     def run_loop(self):
         try:
-            # 延迟初始化OCR引擎，减少启动时间
             if self.ocr_engine is None:
                 self.log("正在加载OCR引擎...")
                 self.ocr_engine = RapidOCR()
@@ -751,34 +700,21 @@ class AutoAnswerApp:
 
             while self.running:
                 try:
-                    try:
-                        ques_thresh = float(self.ques_thresh_entry.get().strip() or 0.5)
-                    except:
-                        ques_thresh = 0.5
-                    try:
-                        opt_thresh = float(self.opt_thresh_entry.get().strip() or 0)
-                    except:
-                        opt_thresh = 0
-                    try:
-                        pre_cool = float(self.pre_cool_entry.get().strip() or 3.0)
-                    except:
-                        pre_cool = 3.0
-                    try:
-                        post_cool = float(self.post_cool_entry.get().strip() or 0)
-                    except:
-                        post_cool = 0
-                    pre_cool = max(0.5, pre_cool)
-                    post_cool = max(0, post_cool)
-
+                    # 实时读取UI状态
+                    self.mode = self.mode_var.get()
+                    ques_thresh = float(self.ques_thresh_entry.get().strip() or 0.5)
+                    opt_thresh = float(self.opt_thresh_entry.get().strip() or 0)
+                    pre_cool = max(0.5, float(self.pre_cool_entry.get().strip() or 3.0))
                     opt_offset = int(self.opt_offset_entry.get().strip() or 200)
                     btn_offset = int(self.btn_offset_entry.get().strip() or 200)
 
-                    # === 搜题重试循环：截图OCR+搜题库，最多3次 ===
-                    wake_screen()  # 每道题唤醒一次
+                    # 每题唤醒屏幕
+                    wake_screen()
                     if self.first_loop:
-                        time.sleep(3)  # 首题多等几秒让页面稳定
+                        time.sleep(3)
+
+                    # === 截图OCR ===
                     best_idx = None
-                    score = 0
                     question = ""
                     current_key = ""
                     options = []
@@ -786,74 +722,66 @@ class AutoAnswerApp:
                     next_btn = None
                     items = []
                     roi_x = roi_y = ratio_x = ratio_y = 0
-                    first_opt_top = None
 
                     for search_attempt in range(3):
+                        # 始终截一张用于校准
+                        cur_frame = capture_frame()
+                        if cur_frame is None:
+                            time.sleep(0.1)
+                            continue
+
                         if self.consensus_var.get():
                             result = ocr_with_consensus(self.ocr_engine, times=3)
                         else:
-                            cur_frame = capture_frame()
-                            if cur_frame is None:
-                                time.sleep(0.1)
-                                continue
                             result = ocr_frame(self.ocr_engine, cur_frame)
                         if not result:
                             time.sleep(0.1)
                             continue
 
+                        # 解析OCR结果
                         items = []
                         for line in result:
                             box = line[0]
                             text = line[1]
-                            score_val = line[2] if len(line) > 2 else 1.0
                             xs = [pt[0] for pt in box]
                             ys = [pt[1] for pt in box]
-                            items.append({
-                                "text": text,
-                                "x": min(xs), "y": min(ys),
-                                "w": max(xs)-min(xs), "h": max(ys)-min(ys),
-                                "score": score_val
-                            })
+                            items.append({"text": text, "x": min(xs), "y": min(ys),
+                                          "w": max(xs)-min(xs), "h": max(ys)-min(ys)})
 
-                        # 合并相邻的选项字母和内容
+                        # 合并相邻项
                         merged = []
                         skip = set()
-                        judge_keywords = {'对', '错', '正确', '错误', '√', '×'}
                         for i, item in enumerate(items):
                             if i in skip:
                                 continue
-                            if re.match(r'^[A-F]$', item['text'], re.IGNORECASE) and i+1 < len(items):
+                            txt = item['text']
+                            # A/B/C字母 + 下方内容合并
+                            if re.match(r'^[A-F]$', txt, re.IGNORECASE) and i+1 < len(items):
                                 nxt = items[i+1]
                                 if nxt['y'] - item['y'] < 30:
-                                    merged.append({
-                                        "text": item['text'] + ". " + nxt['text'],
-                                        "x": item['x'], "y": item['y'],
-                                        "w": nxt['x']+nxt['w']-item['x'],
-                                        "h": nxt['y']+nxt['h']-item['y'],
-                                        "score": min(item.get('score', 1), nxt.get('score', 1))
-                                    })
+                                    merged.append({"text": txt + ". " + nxt['text'],
+                                                   "x": item['x'], "y": item['y'],
+                                                   "w": nxt['x']+nxt['w']-item['x'],
+                                                   "h": nxt['y']+nxt['h']-item['y']})
                                     skip.add(i+1)
                                     continue
-                            # 圆圈标识（○●）+ 判断题内容，合并为一个选项
-                            if item['text'] in {'○', '●', '◯', '•', '·'} and i+1 < len(items):
+                            # 圆圈 + 判断题文字合并
+                            if txt in {'○', '●', '◯', '•', '·'} and i+1 < len(items):
                                 nxt = items[i+1]
-                                if nxt['y'] - item['y'] < 30 and nxt['text'] in judge_keywords:
-                                    merged.append({
-                                        "text": nxt['text'],
-                                        "x": item['x'], "y": item['y'],
-                                        "w": nxt['x']+nxt['w']-item['x'],
-                                        "h": nxt['y']+nxt['h']-item['y'],
-                                        "score": min(item.get('score', 1), nxt.get('score', 1))
-                                    })
+                                if nxt['y'] - item['y'] < 30 and nxt['text'] not in {'○', '●', '◯', '•', '·'}:
+                                    merged.append({"text": nxt['text'],
+                                                   "x": item['x'], "y": item['y'],
+                                                   "w": nxt['x']+nxt['w']-item['x'],
+                                                   "h": nxt['y']+nxt['h']-item['y']})
                                     skip.add(i+1)
                                     continue
                             merged.append(item)
                         items = merged
 
+                        # 分类：选项 / 题目 / 下一题按钮
                         options = []
                         q_blocks = []
                         next_btn = None
-
                         for item in items:
                             txt = item['text'].strip()
                             if '下一题' in txt or '下一页' in txt or '下一' in txt:
@@ -861,12 +789,10 @@ class AutoAnswerApp:
                                 continue
                             m = re.match(r'^([A-F])\s*[\.、．:：\-]?\s*(.*)', txt, re.IGNORECASE)
                             if m:
-                                cx = item['x'] + item['w'] // 2
-                                cy = item['y'] + item['h'] // 2
+                                cx, cy = item['x'] + item['w']//2, item['y'] + item['h']//2
                                 options.append((m.group(1).upper(), m.group(2), (cx, cy)))
-                            elif txt in judge_keywords:
-                                cx = item['x'] + item['w'] // 2
-                                cy = item['y'] + item['h'] // 2
+                            elif txt in _JUDGE_KW:
+                                cx, cy = item['x'] + item['w']//2, item['y'] + item['h']//2
                                 options.append(('J', txt, (cx, cy)))
                             else:
                                 q_blocks.append(item)
@@ -875,6 +801,7 @@ class AutoAnswerApp:
                             time.sleep(0.1)
                             continue
 
+                        # 坐标校准
                         img = cur_frame
                         if img is None:
                             time.sleep(0.1)
@@ -886,241 +813,210 @@ class AutoAnswerApp:
                         min_x = min(all_x); max_x = max([it['x']+it['w'] for it in items])
 
                         if self.calibration is None:
-                            # 首次：建立校准映射
                             roi_y = max(0, min_y - 200)
                             roi_x = max(0, min_x - 150)
                             roi_h = min(h - roi_y, max_y - min_y + 400)
                             roi_w = min(w - roi_x, max_x - min_x + 300)
-                            ratio_x = PHONE_W / roi_w if roi_w else 1
-                            ratio_y = PHONE_H / roi_h if roi_h else 1
-                            self.calibration = {
-                                "roi_x": roi_x, "roi_y": roi_y,
-                                "ratio_x": ratio_x, "ratio_y": ratio_y
-                            }
-                        else:
-                            # 后续：复用校准，不做漂移
-                            roi_x = self.calibration["roi_x"]
-                            roi_y = self.calibration["roi_y"]
-                            ratio_x = self.calibration["ratio_x"]
-                            ratio_y = self.calibration["ratio_y"]
+                            self.calibration = {"roi_x": roi_x, "roi_y": roi_y,
+                                                 "ratio_x": PHONE_W / max(roi_w, 1),
+                                                 "ratio_y": PHONE_H / max(roi_h, 1)}
+                        roi_x = self.calibration["roi_x"]
+                        roi_y = self.calibration["roi_y"]
+                        ratio_x = self.calibration["ratio_x"]
+                        ratio_y = self.calibration["ratio_y"]
 
+                        # 提取题目文本
                         first_opt_top = None
                         for item in items:
-                            if re.match(r'^[A-F]', item['text'], re.IGNORECASE) or item['text'] in judge_keywords:
+                            if re.match(r'^[A-F]', item['text'], re.IGNORECASE) or item['text'] in _JUDGE_KW:
                                 first_opt_top = item['y']
                                 break
-                        if first_opt_top is None:
-                            first_opt_top = min_y
+                        first_opt_top = first_opt_top or min_y
                         question = " ".join([it['text'] for it in q_blocks if it['y'] < first_opt_top])
                         if not question:
                             question = " ".join([it['text'] for it in q_blocks[:3]])
-
                         if not question:
                             time.sleep(0.1)
                             continue
 
                         current_key = self.clean_text(question)[:50]
-
                         if current_key == self.last_question_key:
                             break
 
-                        # 搜题库
-                        best_idx, score = self.match_question(question, ques_thresh)
-
-                        if best_idx is not None and score >= ques_thresh:
+                        best_idx, _ = self.match_question(question, ques_thresh)
+                        if best_idx is not None:
                             break
 
-                        # 降级重试
+                        # 降级搜题
                         retry_idx, retry_score = self.match_question(question, max(0.2, ques_thresh * 0.6))
                         if retry_idx is not None and retry_score > 0.2:
                             best_idx = retry_idx
-                            score = retry_score
                             break
 
                         time.sleep(0.1)
 
-                    # 3次都没搜到 → 暂停转手动
                     if best_idx is None:
-                        _to_manual(self)
+                        _to_manual(self, "3次搜题未匹配")
                         time.sleep(1)
                         continue
 
                     self.last_question_key = current_key
 
-                    # === 选项匹配（两种模式共用） ===
+                    # === 选项匹配 ===
                     correct_texts = self.get_correct_texts(best_idx)
                     if not correct_texts:
-                        _to_manual(self)
+                        _to_manual(self, "题库无答案")
                         time.sleep(1)
                         continue
 
-                    all_opts = []
+                    targets = [self.clean_text(t) for t in correct_texts if t]
+                    if not targets:
+                        _to_manual(self, "答案内容为空")
+                        time.sleep(1)
+                        continue
+
+                    # 去重选项列表
+                    opt_list = []
+                    seen_labels = set()
                     for label, text, (x, y) in options:
                         clean = self.clean_text(text)
                         if not clean:
                             continue
-                        all_opts.append((label, clean, x, y))
-
-                    matched_opts = []
-                    targets = [self.clean_text(t) for t in correct_texts if t]
-                    if not targets:
-                        _to_manual(self)
-                        time.sleep(1)
-                        continue
-
-                    opt_list = []
-                    seen_labels = set()
-                    for label, clean, x, y in all_opts:
                         if label not in seen_labels or label == 'J':
                             opt_list.append((label, clean, x, y))
                             seen_labels.add(label)
 
                     if not opt_list:
-                        _to_manual(self)
+                        _to_manual(self, "屏幕无选项")
                         time.sleep(1)
                         continue
 
-                    selected_positions = set()
+                    # 逐个目标匹配最优选项
+                    matched_opts = []
+                    used_pos = set()
+                    match_ok = True
                     for target in targets:
                         best_opt = None
                         best_sim = -1
-                        target_stripped = self.strip_option_prefix(target) if re.match(r'^[A-F]', target, re.IGNORECASE) else target
-
                         for label, clean, x, y in opt_list:
-                            if (x, y) in selected_positions:
+                            if (x, y) in used_pos:
                                 continue
                             sim = 0
-                            if clean == target or clean == target_stripped:
+                            if clean == target:
                                 sim = 1.0
-                            elif target in clean or clean in target or target_stripped in clean or clean in target_stripped:
-                                sim = 0.9
-                            else:
-                                sim = SequenceMatcher(None, target_stripped, clean).ratio()
-                                keywords = re.split(r'[\s,，、.。;；:：]', target_stripped)
-                                keywords = [k for k in keywords if len(k) > 1]
-                                if keywords:
-                                    longest = max(keywords, key=len)
-                                    if longest in clean:
-                                        sim = max(sim, 0.75)
-                                max_len = max(len(target_stripped), len(clean))
-                                min_len = min(len(target_stripped), len(clean))
-                                if max_len > 0 and min_len / max_len > 0.85:
-                                    sim = max(sim, 0.85)
-
+                            elif len(target) >= 2 and len(clean) >= 2:
+                                if target in clean:
+                                    sim = 0.95
+                                elif clean in target:
+                                    sim = 0.9
+                            if sim < 0.9:
+                                seq = SequenceMatcher(None, target, clean).ratio()
+                                sim = max(sim, seq)
+                                if target and clean and target[0] == clean[0]:
+                                    sim = max(sim, min(seq + 0.1, 0.95))
+                                ml = max(len(target), len(clean))
+                                nl = min(len(target), len(clean))
+                                if ml > 0 and nl / ml > 0.8:
+                                    sim = max(sim, min(seq + 0.15, 0.95))
                             if sim > best_sim:
                                 best_sim = sim
                                 best_opt = (label, x, y)
-
-                        if best_opt and best_sim >= opt_thresh:
+                        # 多选要求至少0.6置信度，单选至少0.5
+                        min_conf = 0.6 if len(targets) > 1 else 0.5
+                        if best_opt and best_sim >= max(min_conf, opt_thresh):
                             matched_opts.append(best_opt)
-                            selected_positions.add((best_opt[1], best_opt[2]))
+                            used_pos.add((best_opt[1], best_opt[2]))
                         else:
-                            _to_manual(self)
-                            time.sleep(1)
+                            match_ok = False
                             break
 
-                    if len(targets) > 1:
-                        matched_count = len([m for m in matched_opts if m[0] != 'J'])
-                        if matched_count < len(targets):
-                            _to_manual(self)
-                            time.sleep(1)
-                            continue
+                    # 多选必须全部匹配成功
+                    if len(targets) > 1 and len(matched_opts) != len(targets):
+                        match_ok = False
 
-                    if not matched_opts:
-                        _to_manual(self)
+                    if not match_ok or not matched_opts:
+                        _to_manual(self, "选项匹配度不足")
                         time.sleep(1)
                         continue
 
-                    # === 重复识别处理 ===
+                    # === 重复识别：跳过 ===
                     if best_idx in self.processed_indices:
-                        self.same_index_counter[best_idx] = self.same_index_counter.get(best_idx, 0) + 1
-                        if self.same_index_counter[best_idx] >= 3:
-                            self.same_index_counter[best_idx] = 0
-
                         if self.mode == "auto":
-                            is_multi = len(correct_texts) > 1
-                            # 多选重复点会取消选中，只点下一题；单选判断重复点无害，正常答
-                            if not is_multi:
-                                for label, x, y in matched_opts:
-                                    ph_x = int((x - roi_x) * ratio_x)
-                                    ph_y = int((y - roi_y) * ratio_y) + opt_offset
-                                    ph_x = max(0, min(ph_x, PHONE_W - 1))
-                                    ph_y = max(0, min(ph_y, PHONE_H - 1))
-                                    tap_option(ph_x, ph_y)
+                            if len(correct_texts) <= 1:
+                                for _, x, y in matched_opts:
+                                    tap_option(int((x - roi_x) * ratio_x),
+                                               int((y - roi_y) * ratio_y) + opt_offset)
                                     time.sleep(0.5)
                             if next_btn:
                                 nx, ny = next_btn
-                                pb_x = int((nx - roi_x) * ratio_x)
-                                pb_y = int((ny - roi_y) * ratio_y) + btn_offset
-                                pb_x = max(0, min(pb_x, PHONE_W - 1))
-                                pb_y = max(0, min(pb_y, PHONE_H - 1))
-                                tap_option(pb_x, pb_y)
+                                tap_option(int((nx - roi_x) * ratio_x),
+                                           int((ny - roi_y) * ratio_y) + btn_offset)
                             time.sleep(pre_cool)
                         else:
-                            if not self._repeat_notified:
-                                self._repeat_notified = True
                             time.sleep(1)
                         self.last_question_key = ""
-                        self.same_index_counter.clear()
                         continue
-                    else:
-                        self._repeat_notified = False
 
-                    # === 新题处理 ===
+                    # === 新题 ===
                     self.processed_indices.add(best_idx)
-                    self.same_index_counter[best_idx] = 0
-
-                    # 答案显示
                     is_first = self.first_loop
                     if is_first:
                         self.log("首题已识别，手动翻页后开始自动答题")
                         self.first_loop = False
-                    self.log(self.format_answer(correct_texts, options))
 
+                    # 答案显示
+                    used_labels = set()
+                    parts = []
+                    for ct in correct_texts:
+                        ct_clean = self.clean_text(ct)
+                        found = None
+                        for lb, tx, *_ in options:
+                            if not tx or (lb in used_labels and lb != 'J'):
+                                continue
+                            if self.clean_text(tx) == ct_clean:
+                                found = lb
+                                break
+                        if not found and len(ct_clean) >= 3:
+                            for lb, tx, *_ in options:
+                                if not tx or (lb in used_labels and lb != 'J'):
+                                    continue
+                                tc = self.clean_text(tx)
+                                if len(tc) >= 3 and (ct_clean in tc or tc in ct_clean):
+                                    found = lb
+                                    break
+                        if found:
+                            used_labels.add(found)
+                            parts.append(f"{found}.{ct}")
+                        else:
+                            parts.append(ct)
+                    self.log("答案: " + " ".join(parts))
+
+                    # 自动点击
                     if self.mode == "auto":
                         if not ADB_PATH:
-                            self.mode = "manual"
-                            self.mode_var.set("manual")
+                            _to_manual(self, "未找到ADB")
                             time.sleep(1)
                             continue
-
-                        # 首题不点击
                         if is_first:
                             time.sleep(1)
                             continue
-
-                        # 点击选项
-                        for label, x, y in matched_opts:
-                            ph_x = int((x - roi_x) * ratio_x)
-                            ph_y = int((y - roi_y) * ratio_y) + opt_offset
-                            ph_x = max(0, min(ph_x, PHONE_W - 1))
-                            ph_y = max(0, min(ph_y, PHONE_H - 1))
-                            tap_option(ph_x, ph_y)
+                        for _, x, y in matched_opts:
+                            tap_option(int((x - roi_x) * ratio_x),
+                                       int((y - roi_y) * ratio_y) + opt_offset)
                             time.sleep(0.5)
-
-                        # 点击下一题
                         if next_btn:
                             nx, ny = next_btn
-                            pb_x = int((nx - roi_x) * ratio_x)
-                            pb_y = int((ny - roi_y) * ratio_y) + btn_offset
-                            pb_x = max(0, min(pb_x, PHONE_W - 1))
-                            pb_y = max(0, min(pb_y, PHONE_H - 1))
-                            tap_option(pb_x, pb_y)
-
+                            tap_option(int((nx - roi_x) * ratio_x),
+                                       int((ny - roi_y) * ratio_y) + btn_offset)
                         time.sleep(pre_cool)
                     else:
                         time.sleep(1)
 
                     self.last_question_key = ""
-                    self.same_index_counter.clear()
-                    self._repeat_notified = False
                     self.first_loop = False
 
                 except Exception as e:
-                    import traceback
-                    self.log(f"异常: {type(e).__name__}: {e}")
-                    self.log(traceback.format_exc())
-                    _to_manual(self)
+                    _to_manual(self, f"{type(e).__name__}: {e}")
                     wake_screen()
                     time.sleep(1)
 
