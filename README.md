@@ -90,7 +90,7 @@ git clone https://github.com/cobetckoe/ExamTerminator.git
 cd ExamTerminator
 pip install -r requirements.txt
 cd src
-python exam_terminator.py
+python ExamTerminator.py
 ```
 
 **注意**：从源码运行需要确保ADB工具已安装在`src/platform-tools/`目录下。
