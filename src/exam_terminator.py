@@ -226,7 +226,7 @@ class AutoAnswerApp:
         global _app_ref
         _app_ref = self
         self.root = root
-        self.root.title("Exam Terminator")
+        self.root.title("答题终结者")
         self.root.geometry("860x680")
         self.root.minsize(750, 580)
 
@@ -256,7 +256,7 @@ class AutoAnswerApp:
         self.root.rowconfigure(0, weight=1)
 
         # 标题
-        ttk.Label(main, text="Exam Terminator v1.0.0", font=("Consolas", 14, "bold")).pack(anchor="w")
+        ttk.Label(main, text="💀 答题终结者 T-888型", font=("微软雅黑", 14, "bold")).pack(anchor="w")
         ttk.Label(main, text="自动模式仅限小米手机，其他品牌请用手动模式", font=("微软雅黑", 8), foreground="gray").pack(anchor="w")
 
         # === 主体两栏布局 ===
