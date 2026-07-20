@@ -33,4 +33,4 @@ src/platform-tools/
 
 # Data files (keep only template)
 *.xlsx
-!题库模板.xlsx
+!question_bank_template.xlsx

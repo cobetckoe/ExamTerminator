@@ -1,4 +1,4 @@
-# 答题终结者
+# Exam Terminator
 
 <div align="center">
 
@@ -67,7 +67,7 @@ Excel 文件，三列：题目 | 选项 | 答案
 
 ## 使用方法
 
-1. 下载 `答题终结者.exe` 和 `题库模板.xlsx`（放同一目录）
+1. 下载 `ExamTerminator.exe` 和 `question_bank_template.xlsx`（放同一目录）
 2. 按实际题目编辑题库
 3. 连接高拍仪与小米手机，手机开启 USB 调试
 4. 双击运行，加载题库，点击"开始答题"
